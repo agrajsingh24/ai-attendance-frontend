@@ -1,7 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Text
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from deepface import DeepFace
 import shutil
 import os
@@ -9,22 +9,30 @@ import json
 import numpy as np
 from datetime import datetime
 import uuid
+import logging
+
+# ================= CONFIG =================
+FRONTEND_URL = "https://your-netlify-site.netlify.app"  # 🔴 CHANGE THIS
+DATABASE_URL = "sqlite:///./students.db"
+UPLOAD_FOLDER = "uploads"
+SIMILARITY_THRESHOLD = 0.7
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
 
 # ================= APP INIT =================
 app = FastAPI(title="AI Attendance System 🚀")
 
-# CORS — allow your frontend URL later
+logging.basicConfig(level=logging.INFO)
+
+# ================= CORS =================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace "*" with ["https://your-netlify-site.netlify.app"]
+    allow_origins=[FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ================= DATABASE =================
-DATABASE_URL = "sqlite:///./students.db"
-
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False}
@@ -43,9 +51,24 @@ class Student(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# ================= DB DEPENDENCY =================
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 # ================= STORAGE =================
-UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# ================= MIDDLEWARE (UPLOAD LIMIT) =================
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    if request.headers.get("content-length"):
+        if int(request.headers["content-length"]) > MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="File too large (Max 5MB)")
+    return await call_next(request)
 
 # ================= HELPER FUNCTIONS =================
 def get_embedding(image_path):
@@ -53,11 +76,11 @@ def get_embedding(image_path):
         embedding = DeepFace.represent(
             img_path=image_path,
             model_name="Facenet",
-            enforce_detection=False
+            enforce_detection=True
         )
         return embedding[0]["embedding"]
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Face processing error: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="No face detected or invalid image")
 
 def cosine_similarity(a, b):
     a = np.array(a)
@@ -69,57 +92,62 @@ def cosine_similarity(a, b):
 def root():
     return {"message": "DeepFace Attendance Backend Running 🚀"}
 
-# -------- STUDENT REGISTRATION --------
+# -------- REGISTER STUDENT --------
 @app.post("/register/")
 async def register_student(
     name: str = Form(...),
     roll_no: str = Form(...),
     dob: str = Form(...),
-    files: list[UploadFile] = File(...)
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db)
 ):
-    db = SessionLocal()
-    try:
-        existing = db.query(Student).filter(Student.roll_no == roll_no).first()
-        if existing:
-            raise HTTPException(status_code=400, detail="Roll number already registered")
+    existing = db.query(Student).filter(Student.roll_no == roll_no).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Roll number already registered")
 
-        student_folder = os.path.join(UPLOAD_FOLDER, roll_no)
-        os.makedirs(student_folder, exist_ok=True)
+    student_folder = os.path.join(UPLOAD_FOLDER, roll_no)
+    os.makedirs(student_folder, exist_ok=True)
 
-        all_embeddings = []
-        for file in files:
-            file_path = os.path.join(student_folder, file.filename)
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            embedding = get_embedding(file_path)
-            all_embeddings.append(embedding)
+    all_embeddings = []
 
-        student = Student(
-            name=name,
-            roll_no=roll_no,
-            dob=dob,
-            embeddings=json.dumps(all_embeddings)
-        )
-        db.add(student)
-        db.commit()
-        return {"message": "Student Registered Successfully ✅"}
-    finally:
-        db.close()
+    for file in files:
+        file_path = os.path.join(student_folder, f"{uuid.uuid4().hex}.jpg")
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-# -------- ATTENDANCE --------
+        embedding = get_embedding(file_path)
+        all_embeddings.append(embedding)
+
+    student = Student(
+        name=name,
+        roll_no=roll_no,
+        dob=dob,
+        embeddings=json.dumps(all_embeddings)
+    )
+
+    db.add(student)
+    db.commit()
+
+    logging.info(f"Registered student {roll_no}")
+
+    return {"message": "Student Registered Successfully ✅"}
+
+# -------- MARK ATTENDANCE --------
 @app.post("/attendance/")
-async def mark_attendance(file: UploadFile = File(...)):
-    db = SessionLocal()
+async def mark_attendance(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
     temp_filename = f"classroom_{uuid.uuid4().hex}.jpg"
     temp_path = os.path.join(UPLOAD_FOLDER, temp_filename)
 
-    try:
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    with open(temp_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
+    try:
         detected_faces = DeepFace.extract_faces(
             img_path=temp_path,
-            enforce_detection=False
+            enforce_detection=True
         )
 
         classroom_embeddings = []
@@ -131,20 +159,26 @@ async def mark_attendance(file: UploadFile = File(...)):
             )
             classroom_embeddings.append(face_embedding[0]["embedding"])
 
+        if not classroom_embeddings:
+            raise HTTPException(status_code=400, detail="No faces detected")
+
         students = db.query(Student).all()
+
         present_students = []
         absent_students = []
 
         for student in students:
             stored_embeddings = json.loads(student.embeddings)
             matched = False
+
             for class_emb in classroom_embeddings:
                 for stored_emb in stored_embeddings:
-                    if cosine_similarity(class_emb, stored_emb) > 0.7:
+                    if cosine_similarity(class_emb, stored_emb) > SIMILARITY_THRESHOLD:
                         matched = True
                         break
                 if matched:
                     break
+
             if matched:
                 present_students.append(student.name)
             else:
@@ -152,23 +186,20 @@ async def mark_attendance(file: UploadFile = File(...)):
 
         return {
             "date": str(datetime.now().date()),
-            "time": str(datetime.now().time().strftime("%H:%M:%S")),
-            "present": present_students,
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "present": list(set(present_students)),
             "absent": absent_students
         }
+
     finally:
-        db.close()
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-# -------- GET ALL STUDENTS --------
+# -------- GET STUDENTS --------
 @app.get("/students/")
-def get_students():
-    db = SessionLocal()
-    try:
-        students = db.query(Student).all()
-        return [
-            {"name": s.name, "roll_no": s.roll_no, "dob": s.dob} for s in students
-        ]
-    finally:
-        db.close()
+def get_students(db: Session = Depends(get_db)):
+    students = db.query(Student).all()
+    return [
+        {"name": s.name, "roll_no": s.roll_no, "dob": s.dob}
+        for s in students
+    ]
