@@ -46,9 +46,7 @@ body {
     box-shadow: 0 8px 32px rgba(0,0,0,0.2);
 }
 
-h2 {
-    margin-bottom: 20px;
-}
+h2 { margin-bottom: 20px; }
 
 input, button {
     width: 100%;
@@ -63,9 +61,7 @@ input {
     color: white;
 }
 
-input::placeholder {
-    color: #ddd;
-}
+input::placeholder { color: #ddd; }
 
 button {
     background: linear-gradient(to right, #0072ff, #00c6ff);
@@ -75,7 +71,12 @@ button {
     transition: 0.3s;
 }
 
-button:hover {
+button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+button:hover:not(:disabled) {
     transform: scale(1.03);
 }
 
@@ -103,9 +104,7 @@ button:hover {
     background: rgba(255,255,255,0.2);
 }
 
-.tab-btn.active {
-    background: #00c6ff;
-}
+.tab-btn.active { background: #00c6ff; }
 
 .hidden { display: none; }
 
@@ -136,8 +135,8 @@ button:hover {
             <input type="text" name="name" placeholder="Student Name" required>
             <input type="text" name="roll_no" placeholder="Roll Number" required>
             <input type="date" name="dob" required>
-            <input type="file" name="files" multiple required>
-            <button type="submit">Register Student</button>
+            <input type="file" name="files" accept="image/*" multiple required>
+            <button type="submit" id="registerBtn">Register Student</button>
         </form>
         <div id="registerResult" class="result-box hidden"></div>
     </div>
@@ -146,8 +145,8 @@ button:hover {
     <div id="attendanceSection" class="card hidden">
         <h2>Upload Classroom Image</h2>
         <form id="attendanceForm">
-            <input type="file" name="file" required>
-            <button type="submit">Mark Attendance</button>
+            <input type="file" name="file" accept="image/*" required>
+            <button type="submit" id="attendanceBtn">Mark Attendance</button>
         </form>
         <div id="attendanceResult" class="result-box hidden"></div>
     </div>
@@ -157,33 +156,59 @@ button:hover {
 <script>
 const backendURL = "https://ai-attendance-system-1-jo9l.onrender.com";
 
-// ✅ Fixed Tab Switching
-function switchTab(e, tab) {
-    document.getElementById("registerSection").classList.toggle("hidden", tab !== "register");
-    document.getElementById("attendanceSection").classList.toggle("hidden", tab !== "attendance");
+/* Wake up Render server (cold start fix) */
+async function wakeUpServer() {
+    try { await fetch(`${backendURL}/`); }
+    catch (e) { console.log("Waking up server..."); }
+}
+wakeUpServer();
 
-    document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.remove("active"));
+/* Tab Switching */
+function switchTab(e, tab) {
+    document.getElementById("registerSection")
+        .classList.toggle("hidden", tab !== "register");
+    document.getElementById("attendanceSection")
+        .classList.toggle("hidden", tab !== "attendance");
+
+    document.querySelectorAll(".tab-btn")
+        .forEach(btn => btn.classList.remove("active"));
+
     e.target.classList.add("active");
 }
 
-// ✅ Register Student
-document.getElementById("registerForm").addEventListener("submit", async function(e) {
+/* Helper: Fetch with Timeout */
+async function fetchWithTimeout(url, options, timeout = 120000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+}
+
+/* Register Student */
+document.getElementById("registerForm")
+.addEventListener("submit", async function(e) {
     e.preventDefault();
 
+    const btn = document.getElementById("registerBtn");
     const resultBox = document.getElementById("registerResult");
+
+    btn.disabled = true;
     resultBox.classList.remove("hidden");
     resultBox.innerHTML = "<div class='loading'>Processing... ⏳</div>";
 
     const formData = new FormData(this);
 
     try {
-        const response = await fetch(`${backendURL}/register/`, {
-            method: "POST",
-            body: formData
-        });
+        const response = await fetchWithTimeout(
+            `${backendURL}/register/`,
+            { method: "POST", body: formData }
+        );
 
         const result = await response.json();
-
         if (!response.ok) throw new Error(result.detail || "Registration failed");
 
         resultBox.innerHTML = "✅ " + result.message;
@@ -191,27 +216,32 @@ document.getElementById("registerForm").addEventListener("submit", async functio
 
     } catch (error) {
         resultBox.innerHTML = "❌ " + error.message;
+    } finally {
+        btn.disabled = false;
     }
 });
 
-// ✅ Mark Attendance
-document.getElementById("attendanceForm").addEventListener("submit", async function(e) {
+/* Mark Attendance */
+document.getElementById("attendanceForm")
+.addEventListener("submit", async function(e) {
     e.preventDefault();
 
+    const btn = document.getElementById("attendanceBtn");
     const resultBox = document.getElementById("attendanceResult");
+
+    btn.disabled = true;
     resultBox.classList.remove("hidden");
     resultBox.innerHTML = "<div class='loading'>Analyzing... 🤖</div>";
 
     const formData = new FormData(this);
 
     try {
-        const response = await fetch(`${backendURL}/attendance/`, {
-            method: "POST",
-            body: formData
-        });
+        const response = await fetchWithTimeout(
+            `${backendURL}/attendance/`,
+            { method: "POST", body: formData }
+        );
 
         const result = await response.json();
-
         if (!response.ok) throw new Error(result.detail || "Attendance failed");
 
         let html = `
@@ -236,6 +266,8 @@ document.getElementById("attendanceForm").addEventListener("submit", async funct
 
     } catch (error) {
         resultBox.innerHTML = "❌ " + error.message;
+    } finally {
+        btn.disabled = false;
     }
 });
 </script>
