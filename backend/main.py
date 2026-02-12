@@ -13,17 +13,30 @@ import logging
 
 # ================= CONFIG =================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-DATABASE_URL = f"sqlite:///{os.path.join(BASE_DIR, 'students.db')}"
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 
 SIMILARITY_THRESHOLD = 0.7
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
 
+logging.basicConfig(level=logging.INFO)
+
+# ================= DATABASE (POSTGRES FOR RENDER) =================
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable not set")
+
+# Render requires ssl
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
 # ================= APP INIT =================
 app = FastAPI(title="AI Attendance System 🚀")
-
-logging.basicConfig(level=logging.INFO)
 
 # ================= CORS =================
 app.add_middleware(
@@ -38,15 +51,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================= DATABASE =================
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False}
-)
-
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
-
+# ================= DATABASE MODEL =================
 class Student(Base):
     __tablename__ = "students"
 
@@ -56,6 +61,7 @@ class Student(Base):
     dob = Column(String, nullable=False)
     embeddings = Column(Text, nullable=False)
 
+# Create tables automatically
 Base.metadata.create_all(bind=engine)
 
 # ================= DEPENDENCY =================
