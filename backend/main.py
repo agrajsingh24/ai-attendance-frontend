@@ -15,7 +15,7 @@ import logging
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 
-SIMILARITY_THRESHOLD = 0.7
+SIMILARITY_THRESHOLD = 0.65  # slightly lower for SFace
 MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
 
 logging.basicConfig(level=logging.INFO)
@@ -26,7 +26,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable not set")
 
-# Render requires ssl
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True
@@ -61,7 +60,6 @@ class Student(Base):
     dob = Column(String, nullable=False)
     embeddings = Column(Text, nullable=False)
 
-# Create tables automatically
 Base.metadata.create_all(bind=engine)
 
 # ================= DEPENDENCY =================
@@ -88,7 +86,7 @@ def get_embedding(image_path):
     try:
         embedding = DeepFace.represent(
             img_path=image_path,
-            model_name="Facenet",
+            model_name="SFace",      # 🔥 LIGHTWEIGHT MODEL
             enforce_detection=True
         )
         return embedding[0]["embedding"]
@@ -104,7 +102,7 @@ def cosine_similarity(a, b):
 
 @app.get("/")
 def root():
-    return {"message": "DeepFace Attendance Backend Running 🚀"}
+    return {"message": "AI Attendance Backend Running 🚀"}
 
 # -------- REGISTER STUDENT --------
 @app.post("/register/")
@@ -170,7 +168,7 @@ async def mark_attendance(
         for face in detected_faces:
             face_embedding = DeepFace.represent(
                 img_path=face["face"],
-                model_name="Facenet",
+                model_name="SFace",   # 🔥 LIGHTWEIGHT MODEL
                 enforce_detection=False
             )
             classroom_embeddings.append(face_embedding[0]["embedding"])
